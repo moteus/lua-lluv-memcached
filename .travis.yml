@@ -22,13 +22,14 @@ before_install:
   - source .travis/setenv_lua.sh
   - bash .travis/setup_uv.sh
   - luarocks install luacov-coveralls
+  - luarocks install vararg-lua
 
 install:
   - luarocks make rockspecs/lluv-memcached-scm-0.rockspec UV_DIR=$TRAVIS_BUILD_DIR/libuv
 
 script: 
   - cd test
-  - lua -e"require'lluv.memcached'.self_test()"
+  - lua -lluacov self_test.lua
 
 after_success:
   - luacov-coveralls -v
