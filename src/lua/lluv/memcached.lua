@@ -6,7 +6,7 @@
 --
 --  Licensed according to the included 'LICENSE' document
 --
---  This file is part of lua-lluv library.
+--  This file is part of lua-lluv-memcached library.
 --
 ------------------------------------------------------------------
 -- Memcached Client
