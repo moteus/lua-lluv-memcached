@@ -1,0 +1,39 @@
+language: c
+
+sudo: false
+
+env:
+  global:
+    - LUAROCKS=2.2.0
+  matrix:
+    - LUA=lua5.1
+    # - LUA=lua5.2
+    # - LUA=lua5.3
+    # - LUA=luajit
+
+services:
+  - memcached
+
+branches:
+  only:
+    - master
+
+before_install:
+  - source .travis/setenv_lua.sh
+  - bash .travis/setup_uv.sh
+  - luarocks install luacov-coveralls
+
+install:
+  - luarocks make rockspecs/lluv-memcached-scm-0.rockspec UV_DIR=$TRAVIS_BUILD_DIR/libuv
+
+script: 
+  - cd test
+  - lua -e"require'lluv.memcached'.self_test()"
+
+after_success:
+  - luacov-coveralls -v
+
+notifications:
+  email:
+    on_success: change
+    on_failure: always
