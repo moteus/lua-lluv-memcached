@@ -124,6 +124,24 @@ local function make_inc(cmd, key, value, noreply)
   return cmd .. " " .. key .. " " .. value .. (noreply and " noreply" or "") .. EOL
 end
 
+local function split_host(server, def_host, def_port)
+  if not server then return def_host, def_port end
+  local host, port = string.match(server, "^(.-):(%d*)$")
+  if not host then return server, def_port end
+  if #port == 0 then port = def_port end
+  return host, port
+end
+
+local function call_q(q, ...)
+  while true do
+    local cb = q:pop()
+    if not cb then break end
+    cb(...)
+  end
+end
+
+local EOF   = uv.error("LIBUV", uv.EOF)
+
 -------------------------------------------------------------------
 local MMCStream = ut.class() do
 
@@ -362,63 +380,124 @@ end
 -------------------------------------------------------------------
 
 -------------------------------------------------------------------
-local Connection = class() do
+local Connection = ut.class() do
 
 function Connection:__init(server)
-  server = server or "127.0.0.1"
+  self._host, self._port = split_host(server, "127.0.0.1", "11211")
+  self._stream           = MMCStream.new(self)
+  self._commander        = MMCCommands.new(self._stream)
+  self._open_q           = ut.Queue.new()
+  self._close_q          = ut.Queue.new()
+  self._delay_q          = ut.Queue.new()
+  self._ready            = false
 
-  local host, port = split_first(server, ":")
-  self._host       = host
-  self._port       = port or "11211"
-  self._stream     = MMCStream.new(self)
-  self._commander  = MMCCommands.new(self._stream)
+  self._on_message       = nil
+  self._on_error         = nil
 
-  self._stream:on_request(function(s, data, cb)
-    return self._cnn:write(data, function(cli, err)
-      if err then self._stream:halt(err) end
-    end)
+  local function on_write_error(cli, err)
+    if err then self._stream:halt(err) end
+  end
+
+  self._on_write_handler = on_write_error
+
+  self._stream
+  :on_request(function(s, data, cb)
+    if self._ready then
+      return self._cnn:write(data, on_write_error)
+    end
+    if self._cnn then
+      self._delay_q:push(data)
+      return true
+    end
+    error('Can not execute command on closed client', 3)
   end)
-
-  self._stream:on_halt(function(s, err)
+  :on_halt(function(s, err)
     self:close(err)
-    ocall(self.on_error, self, err)
+    if err ~= EOF then
+      ocall(self._on_error, self, err)
+    end
   end)
 
   return self
 end
 
-function Connection:connected()
-  return not not self._cnn
-end
-
 function Connection:open(cb)
-  if self:connected() then return ocall(cb, self) end
+  if self._ready then
+    uv.defer(cb, self)
+    return self
+  end
 
-  return uv.tcp():connect(self._host, self._port, function(cli, err)
-    if err then
-      cli:close()
-      return ocall(cb, self, err)
-    end
+  if not self._cnn then
+    local ok, err = uv.tcp():connect(self._host, self._port, function(cli, err)
+      if err then return self:close(err) end
 
-    self._cnn = cli
+      cli:start_read(function(cli, err, data)
+        if err then return self._stream:halt(err) end
+        self._stream:append(data):execute()
+      end)
 
-    cli:start_read(function(cli, err, data)
-      if err then return self._stream:halt(err) end
-      self._stream:append(data):execute()
+      while true do
+        local data = self._delay_q:pop()
+        if not data then break end
+        cli:write(data, self._on_write_handler)
+      end
+      self._ready = true
+      while self._ready do
+        local cb = self._open_q:pop()
+        if not cb then break end
+        cb(self)
+      end
     end)
 
-    return ocall(cb, self)
-  end)
+    if not ok then return nil, err end
+    self._cnn = ok
+  end
+
+  if cb then self._open_q:push(cb) end
+
+  return self
 end
 
-function Connection:close(err)
-  if not self:connected() then return end
-  self._cnn:close()
-  self._stream:reset(err or Error(Error.ECONN))
-  self._stream, self._cnn = nil
+function Connection:close(err, cb)
+  if type(err) == 'function' then
+    cb, err = err
+  end
+
+  if not self._cnn then
+    if cb then uv.defer(cb, self) end
+    return
+  end
+
+  if cb then self._close_q:push(cb) end
+
+  if not (self._cnn:closed() or self._cnn:closing()) then
+    local err = err
+    self._cnn:close(function()
+      self._cnn = nil
+
+      call_q(self._open_q, self, err or EOF)
+      self._stream:reset(err or EOF)
+      call_q(self._close_q, self, err)
+      self._delay_q:reset()
+    end)
+  end
+
+  self._ready = false
 end
 
-function Connection:on_error(err) end
+function Connection:on_error(handler)
+  self._on_error = handler
+  return self
+end
+
+function Connection:on_message(handler)
+  self._on_message = handler
+  return self
+end
+
+function Connection:__tostring()
+  return string.format("Lua UV Memcached (%s)", tostring(self._cnn))
+end
 
 do -- export commands
   local function cmd(name)
@@ -450,9 +529,9 @@ local function self_test(server, key)
   Connection.new(server):open(function(self, err)
     assert(not err, tostring(err))
 
-    function self:on_error(err)
+    self:on_error(function(self, err)
       assert(false, tostring(err))
-    end
+    end)
 
     self:delete(key)
 
