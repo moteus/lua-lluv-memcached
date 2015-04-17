@@ -499,6 +499,10 @@ function Connection:__tostring()
   return string.format("Lua UV Memcached (%s)", tostring(self._cnn))
 end
 
+function Connection:connected()
+  return not not self._ready
+end
+
 do -- export commands
   local function cmd(name)
     Connection[name] = function(self, ...)
