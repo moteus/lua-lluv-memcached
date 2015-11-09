@@ -34,6 +34,8 @@ end)
 uv.run(debug.traceback)
 ]]
 
+local _VERSION = "0.1.0-dev"
+
 local uv = require "lluv"
 local ut = require "lluv.utils"
 local va = require "vararg"
@@ -665,6 +667,7 @@ local function self_test(server, key)
 end
 
 return {
+  _VERSION   = _VERSION;
   Connection = Connection;
   self_test  = self_test;
 }
