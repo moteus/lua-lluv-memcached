@@ -39,6 +39,7 @@ local _VERSION = "0.1.0-dev"
 local uv = require "lluv"
 local ut = require "lluv.utils"
 local va = require "vararg"
+local EventEmitter = require "EventEmitter"
 
 local EOL = "\r\n"
 local WAIT = {}
@@ -73,15 +74,13 @@ local Error = ut.Errors("MEMCACHED", {
   { ECONN            = "Problem with server connection" },
 })
 
-local function write_with_cb(cli, data, cb)
-  cli:write(data, cb)
-end
-
 local function cb_args(...)
   local n = select("#", ...)
-  local cb = va.range(n, n, ...)
-  if type(cb) == 'function' then
-    return cb, va.remove(n, ...)
+  if n > 0 then
+    local cb = select(-1, ...)
+    if type(cb) == 'function' then
+      return cb, va.remove(n, ...)
+    end
   end
   return nil, ...
 end
@@ -142,7 +141,8 @@ local function call_q(q, ...)
   end
 end
 
-local EOF   = uv.error("LIBUV", uv.EOF)
+local EOF      = uv.error("LIBUV", uv.EOF)
+local ENOTCONN = uv.error("LIBUV", uv.ENOTCONN)
 
 -------------------------------------------------------------------
 local MMCStream = ut.class() do
@@ -150,7 +150,7 @@ local MMCStream = ut.class() do
 function MMCStream:__init(_self)
   self._buffer = ut.Buffer.new(EOL)
   self._queue  = ut.Queue.new()
-  self._self   = _self -- first arg for callbacks
+  self._self   = _self or self -- first arg for callbacks
 
   return self
 end
@@ -241,7 +241,7 @@ function MMCStream:append(data)
 end
 
 function MMCStream:request(data, type, cb)
-  if not self:_on_request(data, cb) then
+  if not self._on_request(self._self, data, cb) then
     return
   end
 
@@ -269,7 +269,7 @@ end
 
 function MMCStream:halt(err)
   self:reset(err)
-  if self._on_halt then self:_on_halt(err) end
+  if self._on_halt then self._on_halt(self._self, err) end
   return
 end
 
@@ -384,6 +384,32 @@ end
 -------------------------------------------------------------------
 local Connection = ut.class() do
 
+local function on_write_handler(cli, err, self)
+  if err then
+    self._stream:halt(err)
+  end
+end
+
+local function on_stream_request(self, data, cb)
+  if self._ready then
+    return self._cnn:write(data, on_write_handler, self)
+  end
+
+  if self._cnn then
+    self._delay_q:push(data)
+    return true
+  end
+
+  uv.defer(cb, self, ENOTCONN)
+end
+
+local function on_stream_halt(self, err)
+  if err ~= EOF then
+    self._ee:emit('error', err)
+  end
+  self:close(err)
+end
+
 function Connection:__init(server)
   self._host, self._port = split_host(server, "127.0.0.1", "11211")
   self._stream           = MMCStream.new(self)
@@ -392,33 +418,11 @@ function Connection:__init(server)
   self._close_q          = ut.Queue.new()
   self._delay_q          = ut.Queue.new()
   self._ready            = false
-
-  self._on_message       = nil
-  self._on_error         = nil
-
-  local function on_write_error(cli, err)
-    if err then self._stream:halt(err) end
-  end
-
-  self._on_write_handler = on_write_error
+  self._ee               = EventEmitter.new{self=self}
 
   self._stream
-  :on_request(function(s, data, cb)
-    if self._ready then
-      return self._cnn:write(data, on_write_error)
-    end
-    if self._cnn then
-      self._delay_q:push(data)
-      return true
-    end
-    error('Can not execute command on closed client', 3)
-  end)
-  :on_halt(function(s, err)
-    self:close(err)
-    if err ~= EOF then
-      ocall(self._on_error, self, err)
-    end
-  end)
+    :on_request(on_stream_request)
+    :on_halt(on_stream_halt)
 
   return self
 end
@@ -433,17 +437,22 @@ function Connection:open(cb)
     local ok, err = uv.tcp():connect(self._host, self._port, function(cli, err)
       if err then return self:close(err) end
 
+      self._ee:emit('open')
+
       cli:start_read(function(cli, err, data)
         if err then return self._stream:halt(err) end
         self._stream:append(data):execute()
       end)
 
+      self._ready = true
+      self._ee:emit('ready')
+
       while true do
         local data = self._delay_q:pop()
         if not data then break end
-        cli:write(data, self._on_write_handler)
+        cli:write(data, on_write_handler, self)
       end
-      self._ready = true
+
       while self._ready do
         local cb = self._open_q:pop()
         if not cb then break end
@@ -481,20 +490,12 @@ function Connection:close(err, cb)
       self._stream:reset(err or EOF)
       call_q(self._close_q, self, err)
       self._delay_q:reset()
+
+      self._ee:emit('close', err)
     end)
   end
 
   self._ready = false
-end
-
-function Connection:on_error(handler)
-  self._on_error = handler
-  return self
-end
-
-function Connection:on_message(handler)
-  self._on_message = handler
-  return self
 end
 
 function Connection:__tostring()
@@ -503,6 +504,26 @@ end
 
 function Connection:connected()
   return not not self._ready
+end
+
+function Connection:on(...)
+  return self._ee:on(...)
+end
+
+function Connection:off(...)
+  return self._ee:off(...)
+end
+
+function Connection:onAny(...)
+  return self._ee:onAny(...)
+end
+
+function Connection:offAny(...)
+  return self._ee:offAny(...)
+end
+
+function Connection:removeAllListeners(...)
+  return self._ee:removeAllListeners(...)
 end
 
 do -- export commands
@@ -535,7 +556,7 @@ local function self_test(server, key)
   Connection.new(server):open(function(self, err)
     assert(not err, tostring(err))
 
-    self:on_error(function(self, err)
+    self:on('error', function(self, _, err)
       assert(false, tostring(err))
     end)
 
