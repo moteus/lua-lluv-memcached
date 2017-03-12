@@ -382,6 +382,41 @@ end
 -------------------------------------------------------------------
 
 -------------------------------------------------------------------
+-- create monitoring timer to be able to reconnect redis connection
+-- close this timer before close connection object
+local function AutoReconnect(cnn, interval, on_connect, on_disconnect)
+
+  local timer = uv.timer():start(0, interval, function(self)
+    self:stop()
+    cnn:open()
+  end):stop()
+
+  local connected = true
+
+  cnn:on('close', function(self, event, ...)
+    local flag = connected
+
+    connected = false
+
+    if flag then on_disconnect(self, ...) end
+
+    if timer:closed() or timer:closing() then
+      return
+    end
+
+    timer:again()
+  end)
+
+  cnn:on('ready', function(self, event, ...)
+    connected = true
+    on_connect(self, ...)
+  end)
+
+  return timer
+end
+-------------------------------------------------------------------
+
+-------------------------------------------------------------------
 local Connection = ut.class() do
 
 local function on_write_handler(cli, err, self)
@@ -407,11 +442,15 @@ local function on_stream_halt(self, err)
   if err ~= EOF then
     self._ee:emit('error', err)
   end
-  self:close(err)
+  self:_close(err)
 end
 
-function Connection:__init(server)
-  self._host, self._port = split_host(server, "127.0.0.1", "11211")
+function Connection:__init(option)
+  if type(option) ~= 'table' then
+    option = {server = option}
+  end
+  
+  self._host, self._port = split_host(option.server, "127.0.0.1", "11211")
   self._stream           = MMCStream.new(self)
   self._commander        = MMCCommands.new(self._stream)
   self._open_q           = ut.Queue.new()
@@ -420,12 +459,24 @@ function Connection:__init(server)
   self._ready            = false
   self._ee               = EventEmitter.new{self=self}
 
+  if option.reconnect then
+    local interval = 30
+    if type(option.reconnect) == 'number' then
+      interval = option.reconnect * 1000
+    end
+    self._reconnect_interval = interval
+  end
+
   self._stream
     :on_request(on_stream_request)
     :on_halt(on_stream_halt)
 
   return self
 end
+
+local on_reconnect  = function(self, ...) self._ee:emit('reconnect',  ...) end
+
+local on_disconnect = function(self, ...) self._ee:emit('disconnect', ...) end
 
 function Connection:open(cb)
   if self._ready then
@@ -435,7 +486,7 @@ function Connection:open(cb)
 
   if not self._cnn then
     local ok, err = uv.tcp():connect(self._host, self._port, function(cli, err)
-      if err then return self:close(err) end
+      if err then return self:_close(err) end
 
       self._ee:emit('open')
 
@@ -462,14 +513,30 @@ function Connection:open(cb)
 
     if not ok then return nil, err end
     self._cnn = ok
-  end
+
+    if self._reconnect_interval and not self._reconnect then
+      self._reconnect = AutoReconnect(self,
+        self._reconnect_interval,
+        on_reconnect,
+        on_disconnect
+      )
+    end
+ end
 
   if cb then self._open_q:push(cb) end
 
   return self
 end
 
-function Connection:close(err, cb)
+function Connection:close(...)
+  if self._reconnect then
+    self._reconnect:close()
+    self._reconnect = nil
+  end
+  return self:_close(...)
+end
+
+function Connection:_close(err, cb)
   if type(err) == 'function' then
     cb, err = err
   end
