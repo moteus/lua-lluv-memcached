@@ -221,7 +221,7 @@ function MMCStream:_on_retr(req)
       return ocall(req.cb, self._self, Error(res, line))
     else
       local err = Error("EPROTO", line)
-      self:halt(err)
+      return self:halt(err)
     end
   end
 
@@ -269,8 +269,7 @@ end
 
 function MMCStream:halt(err)
   self:reset(err)
-  if self._on_halt then self._on_halt(self._self, err) end
-  return
+  ocall(self._on_halt, self._self, err)
 end
 
 function MMCStream:reset(err)
