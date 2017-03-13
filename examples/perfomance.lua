@@ -42,7 +42,7 @@ end
 
 end
 
-local function memc_perform(database_count, query_count, key, value)
+local function uvmemc_perform(database_count, query_count, key, value)
   local uv        = require "lluv"
   local Memcached = require "lluv.memcached"
 
@@ -89,10 +89,31 @@ local function memc_perform(database_count, query_count, key, value)
   uv.run()
 end
 
+local function mmemcache_perform(query_count, key, value)
+  local Memcached = prequire "memcached"
+  if not Memcached then return print("lua-memcached not installed") end
+
+  local mmc = Memcached.connect()
+
+  mmc:set(key, value)
+  local timer = timer_start()
+
+  for i = 1, query_count do
+    mmc:get(key)
+  end
+
+  local elapsed, resolution = timer_stop(timer)
+  local throughput = query_count / (elapsed / resolution)
+  print(string.format("memc mean throughput: %.2f [qry/s]", throughput))
+
+  mmc:quit()
+end
+
 local query_count = 100000
 local key, value = 'test_key', 'test_value'
 
-memc_perform(4, query_count, key, value)
-memc_perform(3, query_count, key, value)
-memc_perform(2, query_count, key, value)
-memc_perform(1, query_count, key, value)
+uvmemc_perform(4, query_count, key, value)
+uvmemc_perform(3, query_count, key, value)
+uvmemc_perform(2, query_count, key, value)
+uvmemc_perform(1, query_count, key, value)
+mmemcache_perform(query_count, key, value)
