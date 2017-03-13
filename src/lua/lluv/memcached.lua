@@ -2,7 +2,7 @@
 --
 --  Author: Alexey Melnichuk <alexeymelnichuck@gmail.com>
 --
---  Copyright (C) 2014 Alexey Melnichuk <alexeymelnichuck@gmail.com>
+--  Copyright (c) 2014-2017 Alexey Melnichuk <alexeymelnichuck@gmail.com>
 --
 --  Licensed according to the included 'LICENSE' document
 --
@@ -34,7 +34,10 @@ end)
 uv.run(debug.traceback)
 ]]
 
-local _VERSION = "0.1.0-dev"
+local _NAME      = "lluv-memcached"
+local _VERSION   = "0.1.0-dev"
+local _COPYRIGHT = "Copyright (c) 2014-2017 Alexey Melnichuk"
+local _LICENSE   = "MIT";
 
 local uv = require "lluv"
 local ut = require "lluv.utils"
@@ -276,7 +279,7 @@ function MMCStream:reset(err)
   while true do
     local task = self._queue:pop()
     if not task then break end
-    task[CB](self, err)
+    ocall(task.cb, self, err)
   end
   self._buffer:reset()
 end
@@ -750,11 +753,14 @@ local function self_test(server, key)
   end)
 
   uv.run(debug.traceback)
-
 end
 
 return {
+  _NAME      = _NAME;
   _VERSION   = _VERSION;
+  _COPYRIGHT = _COPYRIGHT;
+  _LICENSE   = _LICENSE;
+
   Connection = Connection;
   self_test  = self_test;
 }
