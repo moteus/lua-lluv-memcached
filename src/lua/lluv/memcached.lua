@@ -437,7 +437,7 @@ local function on_stream_request(self, data, cb)
     return true
   end
 
-  uv.defer(cb, self, ENOTCONN)
+  if cb then uv.defer(cb, self, ENOTCONN) end
 end
 
 local function on_stream_halt(self, err)
