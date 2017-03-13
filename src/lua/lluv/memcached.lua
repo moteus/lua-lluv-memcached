@@ -279,7 +279,7 @@ function MMCStream:reset(err)
   while true do
     local task = self._queue:pop()
     if not task then break end
-    ocall(task.cb, self, err)
+    ocall(task.cb, self._self, err)
   end
   self._buffer:reset()
 end
