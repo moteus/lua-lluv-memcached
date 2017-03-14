@@ -50,6 +50,7 @@ local WAIT = {}
 local REQ_STORE      = 0 -- single line response
 local REQ_RETR       = 1 -- line + data response
 local REQ_RETR_MULTI = 2 -- line + data response (many keys)
+local REQ_STAT       = 3 -- 
 
 local SERVER_ERRORS = {
   ERROR        = true;
@@ -171,9 +172,12 @@ function MMCStream:execute()
     if req.type == REQ_STORE then
       local ret = self:_on_store(req)
       if ret == WAIT then return end
+      if ret == WAIT then return end
     elseif req.type == REQ_RETR then
       local ret = self:_on_retr(req)
       if ret == WAIT then return end
+    elseif req.type == REQ_STAT then
+      local ret = self:_on_stat(req)
     else
       assert(false, "unknown request type :" .. tostring(req.type))
     end
@@ -237,6 +241,29 @@ function MMCStream:_on_retr(req)
   if not req.res then req.res = {} end
   req.res[#req.res + 1] = { data = string.sub(data, 1, -3); flags = req.flags; cas = req.cas; key = req.key; }
   req.len = nil
+end
+
+function MMCStream:_on_stat(req)
+  local line = self._buffer:read_line()
+  if not line then return WAIT end
+
+  if line == "END" then -- no more data
+    assert(self._queue:pop() == req)
+    return ocall(req.cb, self._self, nil, req.res)
+  end
+
+  local res, data = ut.split_first(line, ' ', true)
+  if res == 'STAT' then
+    local k, v = ut.split_first(data, ' ', true)
+    if not req.res then req.res = {} end
+    req.res[k] = v
+  elseif SERVER_ERRORS[res] then
+    assert(self._queue:pop() == req)
+    return ocall(req.cb, self._self, Error(res, line), req.res)
+  else
+    local err = Error("EPROTO", line)
+    return self:halt(err)
+  end
 end
 
 function MMCStream:append(data)
@@ -373,12 +400,26 @@ end
 
 -- (key, value[, noreply])
 function MMCCommands:touch(...)
-  local cb, key, value, noreply = cb_args(...)
-  assert(value)
+  local cb, key, expire, noreply = cb_args(...)
+  assert(expire)
   return self:_send(
-    make_inc("touch", key, value, noreply),
+    make_inc("touch", key, expire, noreply),
     REQ_STORE, cb
   )
+end
+
+function MMCCommands:flush_all(cb)
+  return self:_send('flush_all' .. EOL, REQ_STORE, cb)
+end
+
+function MMCCommands:version(cb)
+  return self:_send('version' .. EOL, REQ_STORE, cb)
+end
+
+function MMCCommands:stats(...)
+  local cb, key = cb_args(...)
+  key = key or ''
+  return self:_send('stats ' .. key .. EOL, REQ_STAT, cb)
 end
 
 end
@@ -625,6 +666,9 @@ do -- export commands
   cmd"increment"
   cmd"decrement"
   cmd"touch"
+  cmd"flush_all"
+  cmd"version"
+  cmd"stats"
 end
 
 end

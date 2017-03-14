@@ -7,6 +7,7 @@ local prequire = function(m)
 end
 
 local uv        = require "lluv"
+local ut        = require "lluv.utils"
 local loop      = require "lluv.busted.loop"
 local Memcached = require "lluv.memcached"
 local stp       = prequire"StackTracePlus"
@@ -153,6 +154,64 @@ local function self_test(server, key)
   uv.run(debug.traceback)
 end
 
+describe('lluv.Memcached server commands', function()
+  local cnn
+  local key = 'test_key'
+
+  it('should get server version', function(done) async()
+    cnn:version(function(self, err, ret) assert_nil(err)
+      assert.string(ret)
+      done()
+    end)
+  end)
+
+  it('should get server stats', function(done) async()
+    uv.timer():start(100, function()
+      cnn:stats(function(self, err, stats)
+        assert_nil(err)
+        assert.table(stats)
+        assert.string(stats.version)
+        cnn:version(function(self, err, ret) assert_nil(err)
+          assert.string(ret)
+          local name, version = ut.split_first(ret, ' ', true)
+          if not version then version = ret end
+          assert.equal(version, stats.version)
+          done()
+        end)
+      end)
+    end)
+  end)
+
+  it('should flush', function(done) async()
+    cnn:flush_all(function(self, err, ret) assert_nil(err)
+      assert.equal("OK", ret)
+      cnn:delete(key, function(self, err, ret) assert_nil(err)
+        assert.equal("NOT_FOUND", ret)
+        done()
+      end)
+    end)
+  end)
+
+  before_each(function(done) async()
+    cnn = Memcached.Connection.new()
+    cnn:open(function(self, err) assert_nil(err)
+      self:set(key, "72", 0, 12, function(self, err) assert_nil(err)
+        done()
+      end)
+    end)
+  end)
+
+  after_each(function(done) async()
+    if cnn then
+      cnn:close(function() done() end)
+      cnn=nil
+      return
+    end
+    done()
+  end)
+
+end)
+
 describe('lluv.Memcached unexisted key tests', function()
   local cnn
   local key = 'test_key'
@@ -198,6 +257,13 @@ describe('lluv.Memcached unexisted key tests', function()
       done()
     end)
   end)
+
+  -- it('should touch unexisted key', function(done) async()
+  --   cnn:touch(key, 1, function(self, err, ret) assert_nil(err)
+  --     assert.equal("NOT_STORED", ret)
+  --     done()
+  --   end)
+  -- end)
 
   it('should store key', function(done) async()
     cnn:set(key, "72", function(self, err, ret) assert_nil(err)
@@ -297,6 +363,13 @@ describe('lluv.Memcached numeric key tests', function()
       end)
     end)
   end)
+
+  -- it('should touch and expire key', function(done) async()
+  --   cnn:touch(key, 1, function(self, err, ret) assert_nil(err)
+  --     assert.equal("STORED", ret)
+  --     done()
+  --   end)
+  -- end)
 
   before_each(function(done) async()
     cnn = Memcached.Connection.new()
