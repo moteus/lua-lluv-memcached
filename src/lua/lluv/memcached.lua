@@ -75,6 +75,7 @@ local Error = ut.Errors("MEMCACHED", {
   { CLIENT_ERROR     = "Invalid command arguments"      },
   { SERVER_ERROR     = "Server error"                   },
   { ECONN            = "Problem with server connection" },
+  { EQUEUE           = "Command queue overflow"         },
 })
 
 local function cb_args(...)
@@ -428,6 +429,16 @@ local function on_write_handler(cli, err, self)
 end
 
 local function on_stream_request(self, data, cb)
+
+ if self._max_queue_size then
+    local pending = self._stream._queue:size()
+    if pending >= self._max_queue_size then
+      uv.defer(cb, self,  Error("EQUEUE"))
+      self._ee:emit('overflow')
+      return false
+    end
+  end
+
   if self._ready then
     return self._cnn:write(data, on_write_handler, self)
   end
@@ -460,6 +471,7 @@ function Connection:__init(option)
   self._delay_q          = ut.Queue.new()
   self._ready            = false
   self._ee               = EventEmitter.new{self=self}
+  self._max_queue_size   = option.max_queue_size
 
   if option.reconnect then
     local interval = 30
@@ -551,7 +563,6 @@ function Connection:_close(err, cb)
   if cb then self._close_q:push(cb) end
 
   if not (self._cnn:closed() or self._cnn:closing()) then
-    local err = err
     self._cnn:close(function()
       self._cnn = nil
 
@@ -618,142 +629,6 @@ end
 
 end
 -------------------------------------------------------------------
-
-local function self_test(server, key)
-  key = key or "test_key"
-
-  Connection.new(server):open(function(self, err)
-    assert(not err, tostring(err))
-
-    self:on('error', function(self, _, err)
-      assert(false, tostring(err))
-    end)
-
-    self:delete(key)
-
-    uv.run("once")
-
-    self:delete(key, function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "NOT_FOUND", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:increment(key, 5, function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "NOT_FOUND", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:get(key, function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == nil, tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:replace(key, "hello", function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "NOT_STORED", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:append(key, "hello", function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "NOT_STORED", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:prepend(key, "hello", function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "NOT_STORED", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:set(key, "72", 0, 12, function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "STORED", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:get(key, function(self, err, ret, flags, cas)
-      assert(not err, tostring(err))
-      assert(ret   == "72", tostring(ret))
-      assert(flags == 12,   tostring(flags))
-      assert(cas   == nil,  tostring(cas))
-    end)
-
-    uv.run("once")
-
-    self:gets(key, function(self, err, ret, flags, cas)
-      assert(not err, tostring(err))
-      assert(ret   == "72", tostring(ret))
-      assert(flags == 12,   tostring(flags))
-      assert(type(cas) == "string",  type(cas) .. " - " .. tostring(cas))
-    end)
-
-    uv.run("once")
-
-    self:add(key, "hello", function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "NOT_STORED", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:increment(key, 5, function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "77", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:decrement(key, 2, function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "75", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:prepend(key, "1", function(self, err, ret)
-      assert(not err, tostring(err))
-      assert(ret == "STORED", tostring(ret))
-    end)
-
-    uv.run("once")
-
-    self:gets(key, function(self, err, ret, flags, cas)
-      assert(not err, tostring(err))
-      assert(ret   == "175", tostring(ret))
-      assert(flags == 12,   tostring(flags))
-      assert(type(cas) == "string",  type(cas) .. " - " .. tostring(cas))
-
-      self:cas(key, "178", cas, function(self, err, ret)
-        assert(not err, tostring(err))
-        assert(ret == "STORED", tostring(ret))
-      end)
-
-
-      self:cas(key, "177", cas, function(self, err, ret)
-        assert(not err, tostring(err))
-        assert(ret == "EXISTS", tostring(ret))
-      end)
-
-      self:get(key, function()
-        print("Done!")
-        self:close()
-      end)
-    end)
-  end)
-
-  uv.run(debug.traceback)
-end
 
 return {
   _NAME      = _NAME;
