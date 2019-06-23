@@ -15,6 +15,9 @@ matrix:
     - env: LUA="luajit 2.1"
       os: linux
 
+services:
+  - memcached
+
 cache:
   directories:
     - here
