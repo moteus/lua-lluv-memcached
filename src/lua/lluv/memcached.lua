@@ -172,12 +172,12 @@ function MMCStream:execute()
     if req.type == REQ_STORE then
       local ret = self:_on_store(req)
       if ret == WAIT then return end
-      if ret == WAIT then return end
     elseif req.type == REQ_RETR then
       local ret = self:_on_retr(req)
       if ret == WAIT then return end
     elseif req.type == REQ_STAT then
       local ret = self:_on_stat(req)
+      if ret == WAIT then return end
     else
       assert(false, "unknown request type :" .. tostring(req.type))
     end
